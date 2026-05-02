@@ -1,0 +1,75 @@
+{
+  "compilerOptions": {
+    /* =========================
+       🎯 CORE (NODE PRODUCTION SAFE)
+    ========================= */
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    /* ⚠️ FIX: module + resolution mismatch resolved */
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    /* =========================
+       📁 PROJECT STRUCTURE
+    ========================= */
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    /* =========================
+       ⚡ IMPORT SYSTEM (CLEAN ESM/CJS HYBRID SUPPORT)
+    ========================= */
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+
+    /* =========================
+       🔐 STRICTNESS (BALANCED FOR REAL BACKENDS)
+    ========================= */
+    "strict": true,
+
+    /* KEEP SAFETY WITHOUT BREAKING EXPRESS OVERLOADS */
+    "noImplicitAny": false,
+    "strictNullChecks": true,
+
+    /* FIX EXPRESS / REQUEST TYPE CONFLICTS */
+    "strictFunctionTypes": false,
+    "noImplicitOverride": true,
+
+    /* SAFE OPTIONAL HANDLING (important for AI/chat payloads) */
+    "exactOptionalPropertyTypes": false,
+    "noUncheckedIndexedAccess": false,
+
+    /* =========================
+       🧠 TYPES SYSTEM
+    ========================= */
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types"],
+
+    /* =========================
+       🧹 STABILITY & BUILD SAFETY
+    ========================= */
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* =========================
+       🚀 PERFORMANCE OPTIMIZATION
+    ========================= */
+    "incremental": true,
+    "sourceMap": true,
+
+    /* =========================
+       🧩 CLASS FIELD + EXPRESS FIX
+    ========================= */
+    "useDefineForClassFields": false,
+
+    /* =========================
+       🔥 IMPORTANT FOR NODE APPS
+    ========================= */
+    "allowJs": false,
+    "checkJs": false
+  },
+
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}
