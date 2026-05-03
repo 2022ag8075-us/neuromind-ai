@@ -74,7 +74,7 @@ export default function ChatScreen({ navigation }: any) {
 
   const flatListRef = useRef<FlatList>(null);
   const isMounted = useRef(true);
-  const currentRequest = useRef<any>(null);
+  const currentSessionRef = useRef<string | null>(null);
 
   /* ============================== */
   const safeSetChat = useCallback(
@@ -88,7 +88,6 @@ export default function ChatScreen({ navigation }: any) {
   useEffect(() => {
     return () => {
       isMounted.current = false;
-      currentRequest.current?.abort?.();
     };
   }, []);
 
@@ -99,35 +98,37 @@ export default function ChatScreen({ navigation }: any) {
     });
   };
 
-  useEffect(() => {
-    if (chat.length > 0) scrollToBottom();
-  }, [chat]);
-
   /* ============================== */
-  useEffect(() => {
-    setChat([]);
-  }, [activeSessionId]);
+  const loadMessages = useCallback(async () => {
+    if (!activeSessionId) return;
 
-  /* ============================== */
-  useEffect(() => {
-    let cancelled = false;
+    currentSessionRef.current = activeSessionId;
+    setInitialLoading(true);
 
-    const loadMessages = async () => {
-      if (!activeSessionId) return;
+    try {
+      const res = await API.get(
+        `/chat/messages/${activeSessionId}`
+      );
 
-      setInitialLoading(true);
+      // prevent race overwrite
+      if (currentSessionRef.current !== activeSessionId)
+        return;
 
-      try {
-        const res = await API.get(
-          `/chat/messages/${activeSessionId}`
-        );
+      const raw = Array.isArray(res.data?.data)
+        ? res.data.data
+        : [];
 
-        const raw = Array.isArray(res.data?.data)
-          ? res.data.data
-          : [];
+      // ✅ sort messages properly
+      const sorted = raw.sort(
+        (a: any, b: any) =>
+          new Date(a.createdAt || 0).getTime() -
+          new Date(b.createdAt || 0).getTime()
+      );
 
-        const formatted: Message[] = raw.map((m: any) => ({
-          id: m._id || generateId(),
+      // ✅ stable IDs (NO _id in schema)
+      const formatted: Message[] = sorted.map(
+        (m: any, index: number) => ({
+          id: `${m.createdAt || Date.now()}_${index}`,
           text: m.content || "",
           isUser: m.role === "user",
           time: new Date(
@@ -136,26 +137,25 @@ export default function ChatScreen({ navigation }: any) {
             hour: "2-digit",
             minute: "2-digit",
           }),
-        }));
+        })
+      );
 
-        if (!cancelled && isMounted.current) {
-          setChat(formatted);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          Alert.alert("Error", "Failed to load chats");
-        }
-      } finally {
-        if (!cancelled) setInitialLoading(false);
-      }
-    };
-
-    loadMessages();
-
-    return () => {
-      cancelled = true;
-    };
+      safeSetChat(() => formatted);
+    } catch {
+      Alert.alert("Error", "Failed to load chats");
+    } finally {
+      setInitialLoading(false);
+    }
   }, [activeSessionId]);
+
+  useEffect(() => {
+    loadMessages();
+  }, [loadMessages]);
+
+  /* ============================== */
+  useEffect(() => {
+    if (chat.length > 0) scrollToBottom();
+  }, [chat]);
 
   /* ============================== */
   const pickImage = async () => {
@@ -292,7 +292,8 @@ export default function ChatScreen({ navigation }: any) {
         },
       ]);
 
-      if (!activeSessionId && res.data?.sessionId) {
+      // ✅ ALWAYS sync session
+      if (res.data?.sessionId) {
         selectSession(res.data.sessionId);
       }
 
@@ -334,7 +335,6 @@ export default function ChatScreen({ navigation }: any) {
             : "height"
         }
       >
-        {/* HEADER */}
         <BlurView intensity={50} tint="dark">
           <View style={styles.header}>
             <TouchableOpacity
@@ -371,6 +371,7 @@ export default function ChatScreen({ navigation }: any) {
             <ChatBubble {...item} />
           )}
           contentContainerStyle={styles.chat}
+          onContentSizeChange={scrollToBottom}
         />
 
         {image && (
@@ -487,7 +488,7 @@ const styles = StyleSheet.create({
   },
 
   send: {
-    color: "#151ce7d1",
+    color: "#3b82f6",
     fontSize: 22,
   },
 
