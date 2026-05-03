@@ -22,14 +22,15 @@ import { protect } from "../middleware/authMiddleware.js";
 const router = express.Router();
 
 /* =========================================================
-   🧠 REQUEST EXTENSION (SAFE)
+   🧠 REQUEST TYPE EXTENSION
 ========================================================= */
 interface RequestWithMeta extends Request {
   id?: string;
+  startTime?: number;
 }
 
 /* =========================================================
-   ⚡ SAFE ASYNC WRAPPER (ELIMINATES TRY/CATCH CHAOS)
+   ⚡ SAFE ASYNC WRAPPER
 ========================================================= */
 const asyncHandler =
   (fn: RequestHandler): RequestHandler =>
@@ -38,20 +39,10 @@ const asyncHandler =
   };
 
 /* =========================================================
-   🧠 SAFE RESPONSE HELPERS
+   🧠 ERROR RESPONSE
 ========================================================= */
-const sendSuccess = (res: Response, data: any, status = 200) => {
-  return res.status(status).json({
-    success: true,
-    data,
-  });
-};
-
-const sendError = (
-  res: Response,
-  message: string,
-  status = 500
-) => {
+const sendError = (res: Response, message: string, status = 500) => {
+  if (res.headersSent) return;
   return res.status(status).json({
     success: false,
     message,
@@ -59,15 +50,26 @@ const sendError = (
 };
 
 /* =========================================================
-   🧠 REQUEST ID (TRACEABILITY)
+   🧠 REQUEST ID + TIMING
 ========================================================= */
 router.use((req: RequestWithMeta, _res, next) => {
   req.id = crypto.randomUUID();
+  req.startTime = Date.now();
   next();
 });
 
 /* =========================================================
-   🚦 RATE LIMITERS (PRODUCTION SAFE)
+   📊 REQUEST LOGGER
+========================================================= */
+router.use((req: RequestWithMeta, _res, next) => {
+  console.log(
+    `[CHAT ${req.id}] ${req.method} ${req.originalUrl}`
+  );
+  next();
+});
+
+/* =========================================================
+   🚦 RATE LIMITERS
 ========================================================= */
 const baseLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -84,7 +86,7 @@ const streamLimiter = rateLimit({
 });
 
 /* =========================================================
-   🛡️ MESSAGE VALIDATION (HARDENED)
+   🛡️ MESSAGE VALIDATION
 ========================================================= */
 const validateMessage: RequestHandler = (req, res, next) => {
   const msg = req.body?.message;
@@ -108,15 +110,7 @@ const validateMessage: RequestHandler = (req, res, next) => {
 };
 
 /* =========================================================
-   📊 REQUEST LOGGER
-========================================================= */
-router.use((req: RequestWithMeta, _res, next) => {
-  console.log(`[CHAT ${req.id}] ${req.method} ${req.originalUrl}`);
-  next();
-});
-
-/* =========================================================
-   💬 NORMAL CHAT
+   💬 NORMAL CHAT (STABLE)
 ========================================================= */
 router.post(
   "/",
@@ -126,15 +120,17 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const result = await chatWithAI(req as any, res);
 
-    // IMPORTANT: ensure controller doesn't send response twice
     if (!res.headersSent) {
-      return sendSuccess(res, result);
+      return res.json({
+        success: true,
+        data: result,
+      });
     }
   })
 );
 
 /* =========================================================
-   🔴 STREAM CHAT (STABLE SSE)
+   🔴 STREAM CHAT (FULL SSE ENGINE)
 ========================================================= */
 router.post(
   "/stream",
@@ -144,27 +140,58 @@ router.post(
   asyncHandler(async (req: RequestWithMeta, res: Response) => {
     if (res.headersSent) return;
 
+    // =========================
+    // SSE HEADERS
+    // =========================
     res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
 
-    // heartbeat to prevent proxy timeout
+    // =========================
+    // HEARTBEAT (PREVENT TIMEOUT)
+    // =========================
     const heartbeat = setInterval(() => {
       if (!res.writableEnded) {
-        res.write(": ping\n\n");
+        res.write(": keep-alive\n\n");
       }
-    }, 15000);
+    }, 12000);
 
-    req.on("close", () => {
+    // =========================
+    // CLEAN ABORT HANDLING
+    // =========================
+    const cleanup = () => {
       clearInterval(heartbeat);
-      res.end();
-      console.log(`[STREAM CLOSED ${req.id}]`);
-    });
 
-    await streamChatWithAI(req as any, res);
+      try {
+        if (!res.writableEnded) {
+          res.end();
+        }
+      } catch {}
+
+      console.log(`[STREAM CLOSED ${req.id}]`);
+    };
+
+    req.on("close", cleanup);
+    req.on("aborted", cleanup);
+
+    try {
+      await streamChatWithAI(req as any, res);
+    } catch (err) {
+      console.error(`[STREAM ERROR ${req.id}]`, err);
+
+      if (!res.writableEnded) {
+        res.write(
+          `event: error\ndata: ${JSON.stringify({
+            message: "Stream failed",
+          })}\n\n`
+        );
+      }
+
+      cleanup();
+    }
   })
 );
 
@@ -174,44 +201,32 @@ router.post(
 router.get(
   "/sessions",
   protect,
-  asyncHandler(async (req, res) => {
-    const data = await getChatSessions(req as any, res);
-    return sendSuccess(res, data);
-  })
+  asyncHandler(getChatSessions)
 );
 
 router.get(
   "/messages/:sessionId",
   protect,
-  asyncHandler(async (req, res) => {
-    const data = await getChatBySession(req as any, res);
-    return sendSuccess(res, data);
-  })
+  asyncHandler(getChatBySession)
 );
 
 router.delete(
   "/session/:sessionId",
   protect,
-  asyncHandler(async (req, res) => {
-    await deleteChatSession(req as any, res);
-    return sendSuccess(res, { deleted: true });
-  })
+  asyncHandler(deleteChatSession)
 );
 
 router.delete(
   "/all",
   protect,
-  asyncHandler(async (req, res) => {
-    await clearChatHistory(req as any, res);
-    return sendSuccess(res, { cleared: true });
-  })
+  asyncHandler(clearChatHistory)
 );
 
 /* =========================================================
    ❤️ HEALTH CHECK
 ========================================================= */
 router.get("/health", (_req, res) => {
-  return res.json({
+  res.json({
     success: true,
     service: "NeuroMind Chat API",
     status: "healthy",
@@ -232,7 +247,7 @@ router.use((req, res) => {
 });
 
 /* =========================================================
-   🚨 GLOBAL ERROR HANDLER (CRASH SAFE)
+   🚨 GLOBAL ERROR HANDLER
 ========================================================= */
 router.use(
   (err: any, req: RequestWithMeta, res: Response, _next: NextFunction) => {
