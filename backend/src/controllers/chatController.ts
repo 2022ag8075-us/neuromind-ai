@@ -16,11 +16,11 @@ export interface AuthRequest extends Request {
 ========================================================= */
 const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
-const MAX_CONTEXT = 12;
-const MAX_TOKENS = 900;
-const MAX_DB_MESSAGES = 180;
-const SUMMARY_TRIGGER = 20;
-const TIMEOUT_MS = 20000;
+const MAX_CONTEXT = 15;
+const MAX_TOKENS = 1500; // 🔥 increased
+const MAX_DB_MESSAGES = 200;
+const SUMMARY_TRIGGER = 25;
+const TIMEOUT_MS = 30000;
 
 /* =========================================================
    🧠 SYSTEM PROMPT
@@ -28,7 +28,8 @@ const TIMEOUT_MS = 20000;
 const SYSTEM_PROMPT: ChatCompletionMessageParam = {
   role: "system",
   content:
-    "You are NeuroMind AI. Calm, supportive, non-diagnostic mental wellness assistant. Keep responses clear, short, empathetic.",
+    
+    "You are a helpful and concise assistant for mental wellness support. Always respond with empathy and understanding. Keep answers brief and to the point.",
 };
 
 /* =========================================================

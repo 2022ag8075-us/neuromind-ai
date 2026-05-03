@@ -2,118 +2,165 @@ import { Request, Response, NextFunction } from "express";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import User from "../models/userModel.js";
 
-/**
- * ==============================
- * 🔐 EXTENDED REQUEST TYPE
- * ==============================
- */
+/* =========================================================
+   🔐 SAFE REQUEST TYPE
+========================================================= */
 export interface AuthRequest extends Request {
-  user?: any;
+  user?: {
+    _id: string;
+    email?: string;
+    role?: string;
+  };
   token?: string;
 }
 
-/**
- * ==============================
- * 🧠 SAFE ERROR RESPONSE
- * ==============================
- */
-const fail = (res: Response, message: string, code = 401) => {
+/* =========================================================
+   🚨 SAFE RESPONSE HELPER
+========================================================= */
+const fail = (
+  res: Response,
+  message: string,
+  code = 401,
+  meta?: Record<string, any>
+) => {
   if (res.headersSent) return;
   return res.status(code).json({
     success: false,
     message,
+    ...(meta && { meta }),
   });
 };
 
-/**
- * ==============================
- * 🔐 AUTH MIDDLEWARE (PRODUCTION)
- * ==============================
- */
+/* =========================================================
+   🔐 TOKEN PAYLOAD TYPE
+========================================================= */
+interface DecodedToken extends JwtPayload {
+  id: string;
+  iat?: number;
+  exp?: number;
+}
+
+/* =========================================================
+   🔐 TYPE GUARD (SAFE ERROR CHECK)
+========================================================= */
+const isJwtError = (err: unknown): err is { name: string; message: string } => {
+  return typeof err === "object" && err !== null && "name" in err;
+};
+
+/* =========================================================
+   🔐 AUTH MIDDLEWARE (FULLY HARDENED)
+========================================================= */
 export const protect = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
 ) => {
+  const requestId = `${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+
   try {
-    /**
-     * ==============================
-     * 1. CHECK HEADER
-     * ==============================
-     */
+    /* =========================
+       1. HEADER VALIDATION
+    ========================= */
     const authHeader = req.headers.authorization;
 
-    if (!authHeader) {
-      return fail(res, "Authorization header missing");
-    }
-
-    if (!authHeader.startsWith("Bearer ")) {
-      return fail(res, "Invalid authorization format");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return fail(res, "Missing or invalid Authorization header", 401, {
+        requestId,
+      });
     }
 
     const token = authHeader.split(" ")[1];
 
     if (!token) {
-      return fail(res, "Token missing");
+      return fail(res, "Token missing", 401, { requestId });
     }
 
     req.token = token;
 
-    /**
-     * ==============================
-     * 2. CHECK SECRET
-     * ==============================
-     */
+    /* =========================
+       2. SECRET VALIDATION
+    ========================= */
     const secret = process.env.JWT_SECRET;
 
     if (!secret) {
-      console.error("❌ JWT_SECRET missing in env");
-      return fail(res, "Server misconfiguration", 500);
+      console.error("❌ JWT_SECRET not configured");
+      return fail(res, "Server configuration error", 500, {
+        requestId,
+      });
     }
 
-    /**
-     * ==============================
-     * 3. VERIFY TOKEN (SAFE)
-     * ==============================
-     */
-    let decoded: JwtPayload & { id: string };
+    /* =========================
+       3. VERIFY TOKEN
+    ========================= */
+    let decoded: DecodedToken;
 
     try {
-      decoded = jwt.verify(token, secret) as JwtPayload & {
-        id: string;
-      };
-    } catch (err: any) {
-      return fail(res, "Invalid or expired token");
+      decoded = jwt.verify(token, secret) as DecodedToken;
+    } catch (err: unknown) {
+      if (isJwtError(err)) {
+        if (err.name === "TokenExpiredError") {
+          return fail(res, "Token expired", 401, {
+            requestId,
+          });
+        }
+
+        if (err.name === "JsonWebTokenError") {
+          return fail(res, "Invalid token", 401, {
+            requestId,
+          });
+        }
+      }
+
+      return fail(res, "Token verification failed", 401, {
+        requestId,
+      });
     }
 
     if (!decoded?.id) {
-      return fail(res, "Invalid token payload");
+      return fail(res, "Malformed token payload", 401, {
+        requestId,
+      });
     }
 
-    /**
-     * ==============================
-     * 4. FIND USER
-     * ==============================
-     */
-    const user = await User.findById(decoded.id).select(
-      "-password -__v"
-    );
+    /* =========================
+       4. FETCH USER (SECURE)
+    ========================= */
+    const user = await User.findById(decoded.id)
+      .select("-password -__v")
+      .lean();
 
     if (!user) {
-      return fail(res, "User not found");
+      return fail(res, "User not found (stale token)", 401, {
+        requestId,
+      });
     }
 
-    /**
-     * ==============================
-     * 5. ATTACH USER
-     * ==============================
-     */
-    req.user = user;
+    /* =========================
+       5. ACCOUNT STATUS CHECK
+    ========================= */
+    if ((user as any).isBlocked) {
+      return fail(res, "Account is blocked", 403, {
+        requestId,
+      });
+    }
+
+    /* =========================
+       6. ATTACH USER (SAFE)
+    ========================= */
+    req.user = {
+      _id: user._id.toString(),
+      email: user.email,
+      role: (user as any).role || "user",
+    };
 
     return next();
-  } catch (err: any) {
-    console.error("❌ AUTH ERROR:", err);
+  } catch (err) {
+    console.error(`[AUTH CRASH ${requestId}]`, err);
 
-    return fail(res, "Authentication failed");
+    return fail(res, "Authentication system error", 500, {
+      requestId,
+    });
   }
 };
