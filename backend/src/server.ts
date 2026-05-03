@@ -237,7 +237,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 const startServer = async () => {
   try {
     await connectDB();
-
+const PORT = process.env.PORT || 5000;
     server = app.listen(PORT, () => {
       console.log("=================================");
       console.log(`🚀 NeuroMind API running`);
