@@ -1,4 +1,4 @@
-import React, { memo, useRef } from "react";
+import React, { memo, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -9,26 +9,26 @@ import {
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 
-/**
- * ==============================
- * TYPES
- * ==============================
- */
+/* =========================
+   TYPES
+========================= */
 interface Props {
   text: string;
   isUser?: boolean;
   time?: string;
   status?: "sending" | "sent" | "error";
+
   showAvatar?: boolean;
   failed?: boolean;
   onRetry?: () => void;
+
+  /* 🔥 STREAMING SUPPORT */
+  isStreaming?: boolean;
 }
 
-/**
- * ==============================
- * COMPONENT
- * ==============================
- */
+/* =========================
+   COMPONENT
+========================= */
 function ChatBubble({
   text,
   isUser = false,
@@ -37,20 +37,22 @@ function ChatBubble({
   showAvatar = false,
   failed = false,
   onRetry,
+  isStreaming = false,
 }: Props) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
 
-  /**
-   * =========================
-   * MOUNT ANIMATION
-   * =========================
-   */
-  React.useEffect(() => {
+  const [displayText, setDisplayText] = useState(text);
+  const prevText = useRef(text);
+
+  /* =========================
+     ENTRY ANIMATION
+  ========================= */
+  useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 200,
+        duration: 180,
         useNativeDriver: true,
       }),
       Animated.spring(scaleAnim, {
@@ -61,22 +63,47 @@ function ChatBubble({
     ]).start();
   }, []);
 
-  /**
-   * =========================
-   * COPY HANDLER
-   * =========================
-   */
+  /* =========================
+     STREAMING ENGINE
+     (token-by-token safe sync)
+  ========================= */
+  useEffect(() => {
+    if (text !== prevText.current) {
+      prevText.current = text;
+
+      if (!isStreaming) {
+        setDisplayText(text);
+        return;
+      }
+
+      // smooth streaming effect
+      let i = 0;
+      const interval = setInterval(() => {
+        i++;
+
+        setDisplayText(text.slice(0, i));
+
+        if (i >= text.length) {
+          clearInterval(interval);
+        }
+      }, 10); // adjust speed (lower = faster typing)
+
+      return () => clearInterval(interval);
+    }
+  }, [text, isStreaming]);
+
+  /* =========================
+     COPY HANDLER
+  ========================= */
   const handleCopy = async () => {
     try {
-      await Clipboard.setStringAsync(text);
+      await Clipboard.setStringAsync(displayText);
     } catch {}
   };
 
-  /**
-   * =========================
-   * STATUS ICON
-   * =========================
-   */
+  /* =========================
+     STATUS ICON
+  ========================= */
   const renderStatus = () => {
     if (!isUser || !status) return null;
 
@@ -92,11 +119,9 @@ function ChatBubble({
     }
   };
 
-  /**
-   * =========================
-   * MAIN UI
-   * =========================
-   */
+  /* =========================
+     UI
+  ========================= */
   return (
     <Animated.View
       style={[
@@ -108,14 +133,14 @@ function ChatBubble({
         },
       ]}
     >
-      {/* 🤖 AVATAR */}
+      {/* AVATAR */}
       {!isUser && showAvatar && (
         <View style={styles.avatar}>
           <Text style={styles.avatarText}>🤖</Text>
         </View>
       )}
 
-      {/* 💬 BUBBLE */}
+      {/* BUBBLE */}
       <Pressable
         onLongPress={handleCopy}
         onPress={() => failed && onRetry?.()}
@@ -127,8 +152,11 @@ function ChatBubble({
           failed && styles.failedBubble,
         ]}
       >
-        {/* MESSAGE */}
-        <Text style={styles.text}>{text}</Text>
+        {/* TEXT */}
+        <Text style={styles.text}>
+          {displayText}
+          {isStreaming && <Text style={styles.cursor}>▍</Text>}
+        </Text>
 
         {/* FOOTER */}
         <View style={styles.footer}>
@@ -146,7 +174,7 @@ function ChatBubble({
           {renderStatus()}
         </View>
 
-        {/* RETRY LABEL */}
+        {/* RETRY */}
         {failed && (
           <Text style={styles.retryText}>
             Tap to retry
@@ -157,27 +185,14 @@ function ChatBubble({
   );
 }
 
-/**
- * ==============================
- * MEMO OPTIMIZATION
- * ==============================
- */
-export default memo(
-  ChatBubble,
-  (prev, next) =>
-    prev.text === next.text &&
-    prev.isUser === next.isUser &&
-    prev.time === next.time &&
-    prev.status === next.status &&
-    prev.showAvatar === next.showAvatar &&
-    prev.failed === next.failed
-);
+/* =========================
+   MEMO OPTIMIZATION
+========================= */
+export default memo(ChatBubble);
 
-/**
- * ==============================
- * STYLES
- * ==============================
- */
+/* =========================
+   STYLES
+========================= */
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
@@ -186,13 +201,8 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
 
-  rowLeft: {
-    justifyContent: "flex-start",
-  },
-
-  rowRight: {
-    justifyContent: "flex-end",
-  },
+  rowLeft: { justifyContent: "flex-start" },
+  rowRight: { justifyContent: "flex-end" },
 
   avatar: {
     width: 30,
@@ -204,9 +214,7 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
 
-  avatarText: {
-    fontSize: 12,
-  },
+  avatarText: { fontSize: 12 },
 
   bubble: {
     maxWidth: "80%",
@@ -221,9 +229,7 @@ const styles = StyleSheet.create({
         shadowRadius: 6,
         shadowOffset: { width: 0, height: 2 },
       },
-      android: {
-        elevation: 2,
-      },
+      android: { elevation: 2 },
     }),
   },
 
@@ -242,14 +248,16 @@ const styles = StyleSheet.create({
     borderColor: "#f59e0b",
   },
 
-  pressed: {
-    opacity: 0.85,
-  },
+  pressed: { opacity: 0.85 },
 
   text: {
-    color: "#ffffff",
+    color: "#fff",
     fontSize: 14,
     lineHeight: 20,
+  },
+
+  cursor: {
+    color: "#94a3b8",
   },
 
   footer: {
@@ -259,28 +267,13 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
 
-  time: {
-    fontSize: 10,
-    marginRight: 6,
-  },
+  time: { fontSize: 10, marginRight: 6 },
 
-  userTime: {
-    color: "#e0e7ff",
-  },
+  userTime: { color: "#e0e7ff" },
+  aiTime: { color: "#94a3b8" },
 
-  aiTime: {
-    color: "#94a3b8",
-  },
-
-  status: {
-    fontSize: 10,
-    color: "#e0e7ff",
-  },
-
-  statusError: {
-    fontSize: 10,
-    color: "#f87171",
-  },
+  status: { fontSize: 10, color: "#e0e7ff" },
+  statusError: { fontSize: 10, color: "#f87171" },
 
   retryText: {
     marginTop: 4,
