@@ -5,22 +5,26 @@ import { Chat, IMessage } from "../models/chatModel.js";
 import type { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
 
 /* =========================================================
-   🔐 AUTH TYPE
+   🔐 TYPES
 ========================================================= */
 export interface AuthRequest extends Request {
   user?: { _id: string };
+  id?: string; // request tracing
 }
 
 /* =========================================================
-   ⚙️ CONFIG (HARDENED)
+   ⚙️ CONFIG
 ========================================================= */
 const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
-const MAX_CONTEXT = 15;
-const MAX_TOKENS = 1500; // 🔥 increased
-const MAX_DB_MESSAGES = 200;
-const SUMMARY_TRIGGER = 25;
-const TIMEOUT_MS = 30000;
+const CONFIG = {
+  MAX_CONTEXT: 15,
+  MAX_TOKENS: 1500,
+  MAX_DB_MESSAGES: 200,
+  SUMMARY_TRIGGER: 25,
+  TIMEOUT_MS: 30000,
+  RETRY_COUNT: 2,
+};
 
 /* =========================================================
    🧠 SYSTEM PROMPT
@@ -28,14 +32,12 @@ const TIMEOUT_MS = 30000;
 const SYSTEM_PROMPT: ChatCompletionMessageParam = {
   role: "system",
   content:
-    
-    "You are a helpful and concise assistant for mental wellness support. Always respond with empathy and understanding. Keep answers brief and to the point.",
+    "You are NeuroMind AI. A calm, empathetic, non-diagnostic mental wellness assistant. Keep responses short, supportive, and safe.",
 };
 
 /* =========================================================
-   🧩 SAFE UTILITIES (NO SILENT FAILS)
+   🧩 UTILITIES
 ========================================================= */
-
 const safeMessage = (msg: unknown): string | null => {
   if (typeof msg !== "string") return null;
   const clean = msg.trim();
@@ -43,42 +45,56 @@ const safeMessage = (msg: unknown): string | null => {
   return clean;
 };
 
-const isValidObjectId = (id: any): boolean =>
+const isValidObjectId = (id: any) =>
   mongoose.Types.ObjectId.isValid(id);
 
 const createSessionId = () =>
   `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-/* HARD TIMEOUT WRAPPER */
-const timeout = async <T>(
+const sleep = (ms: number) =>
+  new Promise((res) => setTimeout(res, ms));
+
+/* =========================================================
+   ⏱ TIMEOUT WRAPPER
+========================================================= */
+const withTimeout = async <T>(
   promise: Promise<T>,
   ms: number
 ): Promise<T> => {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error("AI_TIMEOUT"));
-    }, ms);
-
-    promise
-      .then((res) => {
-        clearTimeout(timer);
-        resolve(res);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-  });
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("AI_TIMEOUT")), ms)
+    ),
+  ]);
 };
 
-/* SAFE AI RESPONSE EXTRACTOR */
-const extractAIText = (res: any): string => {
-  return (
-    res?.choices?.[0]?.message?.content ||
-    res?.choices?.[0]?.delta?.content ||
-    ""
-  );
+/* =========================================================
+   🔁 RETRY WRAPPER (CRITICAL)
+========================================================= */
+const withRetry = async <T>(
+  fn: () => Promise<T>,
+  retries = CONFIG.RETRY_COUNT
+): Promise<T> => {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      await sleep(500 * (i + 1));
+    }
+  }
+  throw lastErr;
 };
+
+/* =========================================================
+   🧠 EXTRACT TEXT
+========================================================= */
+const extractAIText = (res: any): string =>
+  res?.choices?.[0]?.message?.content ||
+  res?.choices?.[0]?.delta?.content ||
+  "";
 
 /* =========================================================
    🧠 BUILD CONTEXT
@@ -92,13 +108,13 @@ const buildMessages = (
   if (summary) {
     base.push({
       role: "system",
-      content: `Conversation summary:\n${summary}`,
+      content: `Summary:\n${summary}`,
     });
   }
 
   return [
     ...base,
-    ...messages.slice(-MAX_CONTEXT).map((m) => ({
+    ...messages.slice(-CONFIG.MAX_CONTEXT).map((m) => ({
       role: m.role,
       content: m.content,
     })),
@@ -109,180 +125,158 @@ const buildMessages = (
    🧠 MEMORY CONTROL
 ========================================================= */
 const trimMemory = (chat: any) => {
-  if (!chat?.messages) return;
-  if (chat.messages.length > MAX_DB_MESSAGES) {
-    chat.messages = chat.messages.slice(-MAX_DB_MESSAGES);
+  if (chat.messages.length > CONFIG.MAX_DB_MESSAGES) {
+    chat.messages = chat.messages.slice(
+      -CONFIG.MAX_DB_MESSAGES
+    );
   }
 };
 
 /* =========================================================
-   🧠 SAFE SUMMARY (NO CRASH)
+   🧠 SUMMARY
 ========================================================= */
 const summarizeMemory = async (chat: any) => {
-  try {
-    if (!chat?.messages || chat.messages.length < SUMMARY_TRIGGER) return;
+  if (chat.messages.length < CONFIG.SUMMARY_TRIGGER) return;
 
+  try {
     const input = chat.messages
       .slice(0, 30)
       .map((m: any) => `${m.role}: ${m.content}`)
       .join("\n");
 
-    const res = await timeout(
-      groq.chat.completions.create({
-        model: MODEL,
-        messages: [
-          { role: "system", content: "Summarize in 5 bullet points." },
-          { role: "user", content: input },
-        ],
-        max_tokens: 200,
-      }),
-      TIMEOUT_MS
+    const res = await withRetry(() =>
+      withTimeout(
+        groq.chat.completions.create({
+          model: MODEL,
+          messages: [
+            { role: "system", content: "Summarize briefly." },
+            { role: "user", content: input },
+          ],
+          max_tokens: 150,
+        }),
+        CONFIG.TIMEOUT_MS
+      )
     );
 
-    const summary = extractAIText(res);
-    if (summary) chat.summary = summary;
+    chat.summary = extractAIText(res);
   } catch (err) {
-    console.warn("[SUMMARY ERROR]", err);
+    console.warn("⚠️ Summary failed");
   }
 };
 
 /* =========================================================
-   🏷️ TITLE GENERATION (SAFE)
+   🏷 TITLE GENERATION
 ========================================================= */
-const generateTitleSafe = async (chat: any, text: string) => {
+const generateTitle = async (chat: any, text: string) => {
   try {
-    const res = await timeout(
+    const res = await withTimeout(
       groq.chat.completions.create({
         model: MODEL,
         messages: [
-          { role: "system", content: "Create a short 4-6 word title" },
+          { role: "system", content: "Short title (4-6 words)" },
           { role: "user", content: text },
         ],
         max_tokens: 20,
       }),
-      TIMEOUT_MS
+      CONFIG.TIMEOUT_MS
     );
 
-    const title = extractAIText(res);
-
-    chat.title = title?.trim() || text.slice(0, 40);
-    await chat.save();
-  } catch (err) {
-    console.warn("[TITLE ERROR]", err);
-    try {
-      chat.title = text.slice(0, 40);
-      await chat.save();
-    } catch {}
+    chat.title = extractAIText(res) || text.slice(0, 40);
+  } catch {
+    chat.title = text.slice(0, 40);
   }
 };
 
 /* =========================================================
-   💬 CHAT (NON-STREAM - PRODUCTION SAFE)
+   💬 CHAT (NON-STREAM)
 ========================================================= */
-export const chatWithAI = async (req: AuthRequest, res: Response) => {
+export const chatWithAI = async (
+  req: AuthRequest,
+  res: Response
+) => {
+  const requestId = req.id || Date.now().toString();
+
   try {
     const userId = req.user?._id;
 
     if (!userId || !isValidObjectId(userId)) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized user",
-      });
+      return res.status(401).json({ success: false });
     }
 
     const clean = safeMessage(req.body.message);
     if (!clean) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid message",
-      });
+      return res.status(400).json({ success: false });
     }
 
     const sessionId =
-      typeof req.body.sessionId === "string" && req.body.sessionId
-        ? req.body.sessionId
-        : createSessionId();
+      req.body.sessionId || createSessionId();
 
     const chat = await Chat.findOrCreateSession(
       new mongoose.Types.ObjectId(userId),
       sessionId
     );
 
-    if (!chat) {
-      return res.status(500).json({
-        success: false,
-        message: "Chat session failed",
-      });
-    }
-
     chat.messages.push({ role: "user", content: clean });
     trimMemory(chat);
 
-    let aiResponse;
+    let aiResponse = "";
 
     try {
-      const completion = await timeout(
-        groq.chat.completions.create({
-          model: MODEL,
-          messages: buildMessages(chat.messages, chat.summary),
-          temperature: 0.7,
-          max_tokens: MAX_TOKENS,
-        }),
-        TIMEOUT_MS
+      const completion = await withRetry(() =>
+        withTimeout(
+          groq.chat.completions.create({
+            model: MODEL,
+            messages: buildMessages(chat.messages, chat.summary),
+            temperature: 0.7,
+            max_tokens: CONFIG.MAX_TOKENS,
+          }),
+          CONFIG.TIMEOUT_MS
+        )
       );
 
       aiResponse = extractAIText(completion);
     } catch (err) {
-      console.error("[AI ERROR]", err);
-      aiResponse = "I'm here for you. Please try again.";
+      console.error("AI FAIL:", requestId);
+      aiResponse = "I'm here for you. Try again.";
     }
-
-    if (!aiResponse) aiResponse = "I'm here for you.";
 
     chat.messages.push({ role: "assistant", content: aiResponse });
     chat.lastMessage = aiResponse.slice(0, 120);
 
-    if (!chat.title) {
-      generateTitleSafe(chat, clean);
-    }
-
-    summarizeMemory(chat);
+    if (!chat.title) await generateTitle(chat, clean);
+    await summarizeMemory(chat);
 
     await chat.save();
 
-    return res.json({
-      success: true,
-      reply: aiResponse,
-      sessionId,
-    });
-  } catch (err) {
-    console.error("[CHAT FATAL ERROR]", err);
+    return res.json({ success: true, reply: aiResponse, sessionId });
 
-    return res.status(500).json({
-      success: false,
-      message: "Chat service error",
-    });
+  } catch (err) {
+    console.error("FATAL:", requestId, err);
+    return res.status(500).json({ success: false });
   }
 };
 
 /* =========================================================
-   🔴 STREAM CHAT (CRASH-PROOF SSE)
+   🔴 STREAM (SSE ADVANCED)
 ========================================================= */
-export const streamChatWithAI = async (req: AuthRequest, res: Response) => {
+export const streamChatWithAI = async (
+  req: AuthRequest,
+  res: Response
+) => {
   try {
-    const userId = req.user?._id;
+    /* SSE HEADERS (CRITICAL FIX) */
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
 
-    if (!userId || !isValidObjectId(userId)) {
-      return res.status(401).end();
-    }
+    const userId = req.user?._id;
+    if (!isValidObjectId(userId)) return res.end();
 
     const clean = safeMessage(req.body.message);
-    if (!clean) return res.status(400).end();
+    if (!clean) return res.end();
 
     const sessionId =
-      typeof req.body.sessionId === "string" && req.body.sessionId
-        ? req.body.sessionId
-        : createSessionId();
+      req.body.sessionId || createSessionId();
 
     const chat = await Chat.findOrCreateSession(
       new mongoose.Types.ObjectId(userId),
@@ -290,127 +284,70 @@ export const streamChatWithAI = async (req: AuthRequest, res: Response) => {
     );
 
     chat.messages.push({ role: "user", content: clean });
-    trimMemory(chat);
 
     let full = "";
 
-    let stream;
+    const stream = await groq.chat.completions.create({
+      model: MODEL,
+      messages: buildMessages(chat.messages, chat.summary),
+      stream: true,
+      max_tokens: CONFIG.MAX_TOKENS,
+    });
 
-    try {
-      stream = await timeout(
-        groq.chat.completions.create({
-          model: MODEL,
-          messages: buildMessages(chat.messages, chat.summary),
-          stream: true,
-          max_tokens: MAX_TOKENS,
-        }),
-        TIMEOUT_MS
-      );
-    } catch (err) {
-      console.error("[STREAM INIT ERROR]", err);
-      res.write(`data: ${JSON.stringify({ error: true })}\n\n`);
-      return res.end();
+    for await (const chunk of stream as any) {
+      if (res.writableEnded) break;
+
+      const token = chunk?.choices?.[0]?.delta?.content;
+      if (!token) continue;
+
+      full += token;
+
+      res.write(`data: ${JSON.stringify({ token })}\n\n`);
     }
 
-    try {
-      for await (const chunk of stream as any) {
-        if (res.writableEnded) break;
-
-        const token = chunk?.choices?.[0]?.delta?.content;
-        if (!token) continue;
-
-        full += token;
-
-        res.write(`data: ${JSON.stringify({ token })}\n\n`);
-      }
-    } catch (err) {
-      console.error("[STREAM LOOP ERROR]", err);
-    }
-
-    chat.messages.push({ role: "assistant", content: full || "..." });
-    chat.lastMessage = full.slice(0, 120);
-
-    summarizeMemory(chat);
+    chat.messages.push({ role: "assistant", content: full });
     await chat.save();
 
-    res.write(
-      `data: ${JSON.stringify({ done: true, sessionId })}\n\n`
-    );
+    res.write(`data: ${JSON.stringify({ done: true, sessionId })}\n\n`);
     res.end();
-  } catch (err) {
-    console.error("[STREAM FATAL]", err);
 
-    if (!res.headersSent) {
-      res.status(500).end();
-    } else if (!res.writableEnded) {
-      res.write(`data: ${JSON.stringify({ error: true })}\n\n`);
-      res.end();
-    }
+  } catch (err) {
+    console.error("STREAM ERROR:", err);
+    if (!res.writableEnded) res.end();
   }
 };
 
 /* =========================================================
-   📂 SAFE APIs
+   📂 SESSION APIs
 ========================================================= */
-
 export const getChatSessions = async (req: AuthRequest, res: Response) => {
-  try {
-    const userId = req.user?._id;
+  const chats = await Chat.find({ user: req.user?._id })
+    .sort({ updatedAt: -1 })
+    .select("sessionId title lastMessage updatedAt")
+    .lean();
 
-    if (!isValidObjectId(userId)) {
-      return res.status(401).json({ success: false });
-    }
-
-    const chats = await Chat.find({ user: userId })
-      .sort({ pinned: -1, updatedAt: -1 })
-      .select("sessionId title lastMessage updatedAt pinned")
-      .lean();
-
-    return res.json({ success: true, data: chats || [] });
-  } catch (err) {
-    console.error("[SESSIONS ERROR]", err);
-    return res.status(500).json({ success: false });
-  }
+  res.json({ success: true, data: chats });
 };
 
 export const getChatBySession = async (req: AuthRequest, res: Response) => {
-  try {
-    const chat = await Chat.findOne({
-      user: req.user?._id,
-      sessionId: req.params.sessionId,
-    }).lean();
+  const chat = await Chat.findOne({
+    user: req.user?._id,
+    sessionId: req.params.sessionId,
+  }).lean();
 
-    return res.json({
-      success: true,
-      data: chat?.messages || [],
-      sessionId: req.params.sessionId,
-    });
-  } catch (err) {
-    console.error("[GET CHAT ERROR]", err);
-    return res.status(500).json({ success: false });
-  }
+  res.json({ success: true, data: chat?.messages || [] });
 };
 
 export const deleteChatSession = async (req: AuthRequest, res: Response) => {
-  try {
-    await Chat.deleteOne({
-      user: req.user?._id,
-      sessionId: req.params.sessionId,
-    });
+  await Chat.deleteOne({
+    user: req.user?._id,
+    sessionId: req.params.sessionId,
+  });
 
-    return res.json({ success: true });
-  } catch (err) {
-    console.error("[DELETE ERROR]", err);
-    return res.status(500).json({ success: false });
-  }
+  res.json({ success: true });
 };
 
 export const clearChatHistory = async (req: AuthRequest, res: Response) => {
-  try {
-    await Chat.deleteMany({ user: req.user?._id });
-    return res.json({ success: true });
-  } catch (err) {
-    console.error("[CLEAR ERROR]", err);
-    return res.status(500).json({ success: false });
-  }
+  await Chat.deleteMany({ user: req.user?._id });
+  res.json({ success: true });
 };
