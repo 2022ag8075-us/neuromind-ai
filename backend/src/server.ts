@@ -24,18 +24,26 @@ const app = express();
 const isProd = process.env.NODE_ENV === "production";
 
 /* =========================================================
-   🔐 ENV VALIDATION (HARD FAIL)
+   🌍 TRUST PROXY (IMPORTANT FOR RAILWAY / CLOUD)
+========================================================= */
+app.set("trust proxy", 1);
+
+/* =========================================================
+   🔐 ENV VALIDATION (STRICT)
 ========================================================= */
 const REQUIRED_ENV = ["MONGO_URI", "JWT_SECRET"];
 
-REQUIRED_ENV.forEach((key) => {
+for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
     console.error(`❌ Missing ENV: ${key}`);
     process.exit(1);
   }
-});
+}
 
-const PORT = Number(process.env.PORT) || 5000;
+/* =========================================================
+   ⚙️ PORT CONFIG (SINGLE SOURCE OF TRUTH)
+========================================================= */
+const PORT = process.env.PORT ? Number(process.env.PORT) : 5000;
 
 /* =========================================================
    📁 UPLOAD DIRECTORY SAFETY
@@ -57,7 +65,6 @@ try {
 ========================================================= */
 app.disable("x-powered-by");
 
-/* Helmet (strict production config) */
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -65,15 +72,12 @@ app.use(
   })
 );
 
-/* Compression */
 app.use(compression());
-
-/* Data Sanitization */
 app.use(mongoSanitize());
 app.use(hpp());
 
 /* =========================================================
-   🚦 GLOBAL RATE LIMIT (ANTI-ABUSE)
+   🚦 RATE LIMIT (PRODUCTION SAFE)
 ========================================================= */
 app.use(
   rateLimit({
@@ -81,21 +85,16 @@ app.use(
     max: isProd ? 80 : 200,
     standardHeaders: true,
     legacyHeaders: false,
-    message: {
-      success: false,
-      message: "Too many requests, slow down.",
-    },
   })
 );
 
 /* =========================================================
-   🌐 CORS (PRODUCTION SAFE)
+   🌐 CORS CONFIG
 ========================================================= */
 app.use(
   cors({
     origin: (origin, callback) => {
-      const allowed =
-        process.env.ALLOWED_ORIGINS?.split(",") || ["*"];
+      const allowed = process.env.ALLOWED_ORIGINS?.split(",") || ["*"];
 
       if (!origin || allowed.includes("*") || allowed.includes(origin)) {
         callback(null, true);
@@ -104,21 +103,20 @@ app.use(
       }
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   })
 );
 
 /* =========================================================
-   📦 BODY PARSING (LIMIT PROTECTION)
+   📦 BODY PARSER
 ========================================================= */
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 /* =========================================================
-   ⏱️ REQUEST TIMEOUT (SAFE)
+   ⏱️ REQUEST TIMEOUT
 ========================================================= */
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const timer = setTimeout(() => {
+  const timeout = setTimeout(() => {
     if (!res.headersSent) {
       res.status(408).json({
         success: false,
@@ -127,12 +125,12 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     }
   }, 30000);
 
-  res.on("finish", () => clearTimeout(timer));
+  res.on("finish", () => clearTimeout(timeout));
   next();
 });
 
 /* =========================================================
-   📊 REQUEST LOGGER (SAFE)
+   📊 DEV LOGGER
 ========================================================= */
 if (!isProd) {
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -142,12 +140,15 @@ if (!isProd) {
 }
 
 /* =========================================================
-   ❤️ HEALTH CHECK
+   ❤️ ROOT + HEALTH CHECK (RAILWAY REQUIRED)
 ========================================================= */
-app.get("/health", (_req: Request, res: Response) => {
+app.get("/", (_req, res) => {
+  res.status(200).send("NeuroMind API is running 🚀");
+});
+
+app.get("/health", (_req, res) => {
   res.status(200).json({
     success: true,
-    service: "NeuroMind API",
     status: "healthy",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
@@ -155,7 +156,7 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 /* =========================================================
-   📡 API ROUTES
+   📡 ROUTES
 ========================================================= */
 app.use("/api/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
@@ -178,16 +179,11 @@ app.use((req: Request, res: Response) => {
 });
 
 /* =========================================================
-   🚨 GLOBAL ERROR HANDLER (NO SILENT FAILURES)
+   🚨 GLOBAL ERROR HANDLER
 ========================================================= */
 app.use(
-  (err: any, req: Request, res: Response, _next: NextFunction) => {
-    console.error("🔥 GLOBAL ERROR:", {
-      message: err?.message,
-      stack: isProd ? undefined : err?.stack,
-    });
-
-    if (res.headersSent) return;
+  (err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error("🔥 ERROR:", err?.message);
 
     res.status(err?.status || 500).json({
       success: false,
@@ -199,10 +195,10 @@ app.use(
 );
 
 /* =========================================================
-   ⚠️ PROCESS SAFETY (PRODUCTION GRADE)
+   ⚠️ PROCESS SAFETY
 ========================================================= */
-process.on("unhandledRejection", (reason) => {
-  console.error("❌ UNHANDLED REJECTION:", reason);
+process.on("unhandledRejection", (err) => {
+  console.error("❌ UNHANDLED REJECTION:", err);
 });
 
 process.on("uncaughtException", (err) => {
@@ -211,49 +207,22 @@ process.on("uncaughtException", (err) => {
 });
 
 /* =========================================================
-   🚀 GRACEFUL SHUTDOWN (SAFE CLOSE)
+   🚀 START SERVER
 ========================================================= */
 let server: any;
-
-const shutdown = (signal: string) => {
-  console.log(`⚠️ ${signal} received`);
-
-  if (server) {
-    server.close(() => {
-      console.log("🛑 Server closed gracefully");
-      process.exit(0);
-    });
-  } else {
-    process.exit(0);
-  }
-};
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-/* =========================================================
-   🚀 SERVER START
-========================================================= */
-/* =========================================================
-   🚀 SERVER START (FIXED + PRODUCTION SAFE)
-========================================================= */
 
 const startServer = async () => {
   try {
     await connectDB();
 
-    const PORT = process.env.PORT
-      ? Number(process.env.PORT)
-      : 8080;
-
     server = app.listen(PORT, "0.0.0.0", () => {
       console.log("=================================");
-      console.log(`🚀 NeuroMind API running`);
+      console.log("🚀 NeuroMind API running");
       console.log(`🌐 Port: ${PORT}`);
-      console.log(`🔐 /api/auth`);
-      console.log(`💬 /api/chat`);
-      console.log(`🧠 /api/ai`);
-      console.log(`📊 /api/mood`);
+      console.log("🔐 /api/auth");
+      console.log("💬 /api/chat");
+      console.log("🧠 /api/ai");
+      console.log("📊 /api/mood");
       console.log("=================================");
     });
   } catch (err) {
@@ -263,3 +232,22 @@ const startServer = async () => {
 };
 
 startServer();
+
+/* =========================================================
+   🛑 GRACEFUL SHUTDOWN
+========================================================= */
+const shutdown = (signal: string) => {
+  console.log(`⚠️ ${signal} received`);
+
+  if (server) {
+    server.close(() => {
+      console.log("🛑 Server closed");
+      process.exit(0);
+    });
+  } else {
+    process.exit(0);
+  }
+};
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
