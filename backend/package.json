@@ -5,13 +5,13 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-  "dev": "tsx watch src/server.ts",
-  "build": "tsc",
-  "start": "node dist/server.js",
-  "start:prod": "cross-env NODE_ENV=production node dist/server.js",
-  "clean": "rimraf dist",
-  "rebuild": "npm run clean && npm install && npm run build"
-},
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "start:prod": "cross-env NODE_ENV=production node dist/server.js",
+    "clean": "rimraf dist",
+    "rebuild": "npm run clean && npm install && npm run build"
+  },
   "engines": {
     "node": ">=18"
   },
@@ -37,6 +37,7 @@
     "helmet": "^8.1.0",
     "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.3",
+    "mongodb": "^7.2.0",
     "mongoose": "^9.4.1",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
