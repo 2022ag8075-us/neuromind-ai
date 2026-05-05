@@ -1,5 +1,4 @@
 import "./config/env.js";
-import "./config/db.js";
 
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -245,9 +244,9 @@ const startServer = async () => {
 
     const PORT = process.env.PORT
       ? Number(process.env.PORT)
-      : 5000;
+      : 8080;
 
-    server = app.listen(PORT, () => {
+    server = app.listen(PORT, "0.0.0.0", () => {
       console.log("=================================");
       console.log(`🚀 NeuroMind API running`);
       console.log(`🌐 Port: ${PORT}`);
