@@ -1,4 +1,5 @@
 import "./config/env.js";
+import "./config/db.js";
 
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
@@ -234,14 +235,22 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 /* =========================================================
    🚀 SERVER START
 ========================================================= */
+/* =========================================================
+   🚀 SERVER START (FIXED + PRODUCTION SAFE)
+========================================================= */
+
 const startServer = async () => {
   try {
     await connectDB();
-const PORT = process.env.PORT || 5000;
+
+    const PORT = process.env.PORT
+      ? Number(process.env.PORT)
+      : 5000;
+
     server = app.listen(PORT, () => {
       console.log("=================================");
       console.log(`🚀 NeuroMind API running`);
-      console.log(`🌐 http://localhost:${PORT}`);
+      console.log(`🌐 Port: ${PORT}`);
       console.log(`🔐 /api/auth`);
       console.log(`💬 /api/chat`);
       console.log(`🧠 /api/ai`);

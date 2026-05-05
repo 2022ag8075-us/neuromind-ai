@@ -1,12 +1,10 @@
 {
   "compilerOptions": {
     /* =========================
-       🎯 CORE (NODE PRODUCTION SAFE)
+       🎯 CORE (NODE + ESM SAFE)
     ========================= */
     "target": "ES2022",
     "lib": ["ES2022"],
-
-    /* ⚠️ FIX: module + resolution mismatch resolved */
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
@@ -17,59 +15,65 @@
     "outDir": "./dist",
 
     /* =========================
-       ⚡ IMPORT SYSTEM (CLEAN ESM/CJS HYBRID SUPPORT)
+       ⚡ BUILD CONTROL (CRITICAL FIX)
+    ========================= */
+    "noEmit": false,
+    "declaration": false,
+    "emitDeclarationOnly": false,
+
+    /* =========================
+       ⚡ IMPORT SYSTEM (ESM SAFE)
     ========================= */
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
 
     /* =========================
-       🔐 STRICTNESS (BALANCED FOR REAL BACKENDS)
+       🔐 STRICTNESS (BALANCED)
     ========================= */
     "strict": true,
-
-    /* KEEP SAFETY WITHOUT BREAKING EXPRESS OVERLOADS */
     "noImplicitAny": false,
     "strictNullChecks": true,
-
-    /* FIX EXPRESS / REQUEST TYPE CONFLICTS */
     "strictFunctionTypes": false,
     "noImplicitOverride": true,
 
-    /* SAFE OPTIONAL HANDLING (important for AI/chat payloads) */
-    "exactOptionalPropertyTypes": false,
-    "noUncheckedIndexedAccess": false,
-
     /* =========================
-       🧠 TYPES SYSTEM
+       🧠 TYPES
     ========================= */
     "types": ["node"],
-    "typeRoots": ["./node_modules/@types"],
 
     /* =========================
-       🧹 STABILITY & BUILD SAFETY
+       🧹 BUILD STABILITY
     ========================= */
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
 
     /* =========================
-       🚀 PERFORMANCE OPTIMIZATION
+       🚀 PERFORMANCE
     ========================= */
-    "incremental": true,
+    "incremental": false,
     "sourceMap": true,
 
     /* =========================
-       🧩 CLASS FIELD + EXPRESS FIX
+       🧩 NODE COMPATIBILITY
     ========================= */
     "useDefineForClassFields": false,
 
     /* =========================
-       🔥 IMPORTANT FOR NODE APPS
+       🔥 SAFETY
     ========================= */
     "allowJs": false,
-    "checkJs": false
+    "checkJs": false,
+
+    /* =========================
+       🛠 DEBUG (IMPORTANT)
+    ========================= */
+    "traceResolution": false
   },
 
-  "include": ["src"],
+  /* =========================
+     📦 FILE DETECTION (CRITICAL FIX)
+  ========================= */
+  "include": ["./src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
