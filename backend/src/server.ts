@@ -43,7 +43,7 @@ for (const key of REQUIRED_ENV) {
 /* =========================================================
    ⚙️ PORT CONFIG (SINGLE SOURCE OF TRUTH)
 ========================================================= */
-const PORT = process.env.PORT ? Number(process.env.PORT) : 5000;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 
 /* =========================================================
    📁 UPLOAD DIRECTORY SAFETY
