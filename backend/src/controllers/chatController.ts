@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { groq } from "../config/groq.js";
 import { Chat, IMessage } from "../models/chatModel.js";
 import type { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
@@ -19,7 +20,7 @@ const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
 const CONFIG = {
   MAX_CONTEXT: 15,
-  MAX_TOKENS: 1500,
+  MAX_TOKENS: 2500,
   MAX_DB_MESSAGES: 200,
   SUMMARY_TRIGGER: 25,
   TIMEOUT_MS: 30000,
@@ -257,26 +258,23 @@ export const chatWithAI = async (
 };
 
 /* =========================================================
-   🔴 STREAM (SSE ADVANCED)
+   🔴 STREAM (SSE PRODUCTION-GRADE)
 ========================================================= */
 export const streamChatWithAI = async (
   req: AuthRequest,
   res: Response
 ) => {
-  try {
-    /* SSE HEADERS (CRITICAL FIX) */
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+  const userId = req.user?._id;
 
-    const userId = req.user?._id;
-    if (!isValidObjectId(userId)) return res.end();
+  try {
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).end();
+    }
 
     const clean = safeMessage(req.body.message);
     if (!clean) return res.end();
 
-    const sessionId =
-      req.body.sessionId || createSessionId();
+    const sessionId = req.body.sessionId || createSessionId();
 
     const chat = await Chat.findOrCreateSession(
       new mongoose.Types.ObjectId(userId),
@@ -285,35 +283,136 @@ export const streamChatWithAI = async (
 
     chat.messages.push({ role: "user", content: clean });
 
-    let full = "";
+    const messages = buildMessages(chat.messages, chat.summary);
 
+    let fullText = "";
+    let hasTokens = false;
+
+    /* --------------------- SSE HEADERS (HARDENED) --------------------- */
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    res.flushHeaders?.();
+
+    /* --------------------- HEARTBEAT (prevent proxy timeouts) --------------------- */
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(": ping\n\n");
+      }
+    }, 10000);
+
+    /* --------------------- GROQ STREAM --------------------- */
     const stream = await groq.chat.completions.create({
       model: MODEL,
-      messages: buildMessages(chat.messages, chat.summary),
+      messages,
       stream: true,
+      temperature: 0.7,
       max_tokens: CONFIG.MAX_TOKENS,
     });
 
+    /* --------------------- STREAM LOOP (handles both delta & message formats) --------------------- */
     for await (const chunk of stream as any) {
       if (res.writableEnded) break;
 
-      const token = chunk?.choices?.[0]?.delta?.content;
-      if (!token) continue;
+      const token =
+        chunk?.choices?.[0]?.delta?.content ??
+        chunk?.choices?.[0]?.message?.content ??
+        "";
 
-      full += token;
+      if (typeof token !== "string" || token.length === 0) continue;
+
+      hasTokens = true;
+      fullText += token;
 
       res.write(`data: ${JSON.stringify({ token })}\n\n`);
     }
 
-    chat.messages.push({ role: "assistant", content: full });
+    clearInterval(heartbeat);
+
+    /* --------------------- GUARANTEE OUTPUT (no empty response) --------------------- */
+    if (!hasTokens || fullText.trim().length === 0) {
+      fullText = "I'm here for you. Please try again.";
+    }
+
+    chat.messages.push({ role: "assistant", content: fullText });
     await chat.save();
 
-    res.write(`data: ${JSON.stringify({ done: true, sessionId })}\n\n`);
-    res.end();
+    /* --------------------- FINAL EVENTS --------------------- */
+    res.write(
+      `data: ${JSON.stringify({
+        done: true,
+        sessionId,
+        full: fullText,
+      })}\n\n`
+    );
 
+    res.write("data: [DONE]\n\n");
+    res.end();
   } catch (err) {
     console.error("STREAM ERROR:", err);
-    if (!res.writableEnded) res.end();
+
+    if (!res.writableEnded) {
+      res.write(
+        `data: ${JSON.stringify({
+          error: "STREAM_FAILED",
+        })}\n\n`
+      );
+      res.end();
+    }
+  }
+};
+
+/* =========================================================
+   🚀 CREATE CHAT SESSION
+========================================================= */
+export const createChatSession = async (
+  req: AuthRequest,
+  res: Response
+) => {
+  try {
+    const userId = req.user?._id;
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    const sessionId = crypto.randomUUID();
+
+    const chat = await Chat.create({
+      user: new mongoose.Types.ObjectId(userId),
+      sessionId,
+      title: "New Chat",
+      lastMessage: "",
+      messages: [],
+      pinned: false,
+      summary: "",
+      tags: [],
+      memoryVersion: 1,
+    });
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        sessionId: chat.sessionId,
+        title: chat.title,
+        lastMessage: chat.lastMessage,
+        updatedAt: chat.updatedAt,
+        pinned: chat.pinned,
+      },
+    });
+
+  } catch (err) {
+    console.error("CREATE SESSION ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create session",
+    });
   }
 };
 

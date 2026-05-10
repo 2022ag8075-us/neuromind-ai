@@ -11,6 +11,7 @@ import crypto from "crypto";
 import {
   chatWithAI,
   streamChatWithAI,
+  createChatSession,
   getChatSessions,
   getChatBySession,
   deleteChatSession,
@@ -198,6 +199,12 @@ router.post(
 /* =========================================================
    📂 SESSION ROUTES
 ========================================================= */
+
+router.post(
+  "/sessions",
+  protect,
+  asyncHandler(createChatSession)
+);
 router.get(
   "/sessions",
   protect,
